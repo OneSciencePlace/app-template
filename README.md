@@ -21,6 +21,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -v "$PWD:/data" ghcr.io/onescienceplace/app-NAME:latest --input in.dat
 
 apptainer pull oras://ghcr.io/onescienceplace/app-NAME-sif:latest
+# (fine for a quick try; a Tapis app definition pins <version>@sha256:<digest>)
 apptainer run app-NAME-sif_latest.sif --input in.dat
 ```
 

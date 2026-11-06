@@ -16,7 +16,7 @@ Copy the files unedited. A fix made here reaches every app the next time
 ## The constraints
 
 1. **Per-session token auth, passed in the URL.** The user opens
-   `https://<session>.<satellite-domain>/?<OSP_APP_TOKEN_NAME>=<OSP_APP_TOKEN>`.
+   `https://<session-label>.<sat-id>.sat.<domain>/?<OSP_APP_TOKEN_NAME>=<OSP_APP_TOKEN>`.
    The token authenticates that one session and nothing else.
 2. **Exactly one TCP listener, on loopback, authenticated.** Everything the
    browser needs — HTML, static assets, websockets — arrives on
@@ -37,8 +37,8 @@ scheme is `https`, which is what the `X-Forwarded-Proto` header is for.
 ## What the gate assumes
 
 The container is run with the OSP interactive run profile
-(`--contain --pid --ipc --cleanenv --no-mount bind-paths,cwd`, see
-`osp-run-profiles/`), validated on that system. The session token is present
+(`--contain --pid --ipc --cleanenv --no-mount bind-paths,cwd`), validated on
+that system. The session token is present
 in the rendered `nginx.conf` and in the environment of the session's
 processes. The branch-B upstream is a Unix socket in `$OSP_APP_SOCK_DIR` under
 the session's private `/tmp`, never a TCP port. Sessions that share a Unix uid
@@ -75,7 +75,7 @@ export OSP_APP_TOKEN="$TOKEN"
 docker run --rm --user "$(id -u):$(id -g)" \
   -p 127.0.0.1:6080:6080 \
   -e OSP_APP_PORT=6080 -e OSP_APP_BIND=0.0.0.0 -e OSP_APP_TOKEN \
-  ghcr.io/onescienceplace/app-NAME:latest
+  ghcr.io/onescienceplace/app-NAME:latest     # production pins <version>@sha256:<digest>
 
 # Apptainer: APPTAINERENV_<NAME> arrives as <NAME>, even with --cleanenv.
 export APPTAINERENV_OSP_APP_TOKEN="$TOKEN"
