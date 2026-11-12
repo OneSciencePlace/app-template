@@ -27,10 +27,10 @@ Copy the files unedited. A fix made here reaches every app the next time
 3. **No root, no sudo, no fakeroot at run time.** The container runs as the
    invoking user. `OSP_APP_PORT` must be ≥ 1024, and nothing may write outside
    `/tmp` and the working directory.
-4. **TLS is terminated upstream.** Satellite holds the certificate and reaches
-   us as plain HTTP through the reverse SSH tunnel.
+4. **TLS is terminated upstream.** The Satellite proxy holds the certificate
+   and reaches us as plain HTTP through the reverse SSH tunnel.
 
-Satellite routes by **per-session subdomain**, not by path prefix, so apps do
+The Satellite proxy routes by **per-session subdomain**, not by path prefix, so apps do
 *not* need `--base-url` / prefix support. They do need to be told the browser's
 scheme is `https`, which is what the `X-Forwarded-Proto` header is for.
 
@@ -38,7 +38,10 @@ scheme is `https`, which is what the `X-Forwarded-Proto` header is for.
 
 The container is run with the OSP interactive run profile
 (`--contain --pid --ipc --cleanenv --no-mount bind-paths,cwd`), validated on
-that system. The session token is present
+that system; or, under Docker, with OSP's Docker run profile (`--user`,
+`--cap-drop ALL`, `--security-opt no-new-privileges`, `--ipc private`, limits)
+on a network of the job's own, where the gate binds `0.0.0.0` because nothing
+else is on that network. Both profiles are in `CONVENTIONS.md` §2a. The session token is present
 in the rendered `nginx.conf` and in the environment of the session's
 processes. The branch-B upstream is a Unix socket in `$OSP_APP_SOCK_DIR` under
 the session's private `/tmp`, never a TCP port. Sessions that share a Unix uid
@@ -50,7 +53,7 @@ Put plainly: OSP uses restricted filesystem mounts and namespace isolation to
 prevent an application in one session from reaching another session's
 resources. Those controls isolate what is visible from inside a container.
 They do not create separate Unix identities, they do not stop host-side
-processes running as the same uid, and they are not a complete defence against
+processes running as the same uid, and they are not a complete defense against
 deliberately malicious native code.
 
 ## The variables
@@ -58,7 +61,7 @@ deliberately malicious native code.
 | Variable | Default | Set by | Meaning |
 |---|---|---|---|
 | `OSP_APP_PORT` | `8080` | caller | the one TCP port; ≥ 1024 |
-| `OSP_APP_BIND` | `127.0.0.1` | caller | the address it binds; `0.0.0.0` only for local `docker run -p` |
+| `OSP_APP_BIND` | `127.0.0.1` | caller | the address it binds; `0.0.0.0` only inside a Docker job's own network, or for local `docker run -p` |
 | `OSP_APP_TOKEN` | generated | caller | the per-session secret, `[A-Za-z0-9._~-]` |
 | `OSP_APP_TOKEN_NAME` | `token` | caller | the query parameter it arrives in, `[A-Za-z0-9_]` |
 | `OSP_APP_HEALTH_PATH` | empty (`/`) | the app | what `/healthz` asks the upstream for (branch B) |
@@ -89,8 +92,9 @@ apptainer run \
 `session-env.sh` applies the defaults, validates every value that ends up in a
 configuration file, generates a token if none was given (so a bare
 `docker run` still works), rejects a privileged port, creates
-`$OSP_APP_SOCK_DIR`, sets `umask 077`, and prints the port. It prints the
-tokenised entry path **only when it generated the token itself**; a token the
+`$OSP_APP_SOCK_DIR`, sets `umask 077`, moves `HOME` and `XDG_CACHE_HOME` off
+an image's `/tmp` defaults (below), and prints the port. It prints the
+tokenized entry path **only when it generated the token itself**; a token the
 launcher supplied is never echoed into the job's output.
 
 ## Two kinds of scratch
@@ -99,6 +103,15 @@ launcher supplied is never echoed into the job's output.
 |---|---|---|
 | secrets, sockets, rendered config, pid files, X cookie, `XDG_RUNTIME_DIR`, kernel connection files | `$OSP_APP_SOCK_DIR` (private `/tmp`) | private to the session under the run profile; small (a ~64 MB tmpfs) |
 | caches, large temporary data | `$TMPDIR` (the job directory under the run profile) | room to grow; shared storage, so nothing secret and no sockets |
+
+Images set `HOME=/tmp` and `XDG_CACHE_HOME=/tmp/.cache` so something is
+writable under a read-only `.sif`. On a node-shared `/tmp` (a run without the
+profile) those paths belong to whichever user came first. Where they are still
+in effect, `session-env.sh` gives the session its own: `HOME` becomes
+`$OSP_APP_SOCK_DIR/home`, `XDG_CACHE_HOME` becomes
+`$TMPDIR/<session directory name>/cache` (`$OSP_APP_SOCK_DIR/cache` when
+`TMPDIR` is unset or `/tmp`). Values the job set itself, including the real
+`HOME` Apptainer provides, are kept.
 
 ## The two branches
 
@@ -126,7 +139,7 @@ browser ──https──▶ Satellite ──ssh tunnel──▶ 127.0.0.1:OSP_A
 
 - Request carries a valid `?<name>=<token>` → `Set-Cookie` (HttpOnly, Secure,
   SameSite=Lax) and a **relative** 302 back to the same path. The secret stops
-  travelling in URLs, browser history and `Referer` headers after one hop.
+  traveling in URLs, browser history and `Referer` headers after one hop.
   The redirect must be relative: an absolute one would be built from *our*
   scheme and port (`http://…:6080/`) and send the browser nowhere.
 - Request carries the cookie → proxied through, websocket upgrade included.

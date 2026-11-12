@@ -18,7 +18,7 @@
 #                       with no `=value`. Generated here if unset, so a local
 #                       `docker run` still works.
 #   OSP_APP_TOKEN_NAME  the query parameter the token arrives in, so the entry
-#                       URL is  https://<session>.<satellite-domain>/?<name>=<token>
+#                       URL is  https://<session-label>.<sat-id>.sat.<domain>/?<name>=<token>
 #                       Default `token`, which is what JupyterLab uses natively.
 #                       nginx maps it to $arg_<name> / $cookie_<name>, so it is
 #                       restricted to [A-Za-z0-9_].
@@ -33,6 +33,12 @@
 #                       session -- including other sessions of the same uid.
 #                       Bulk scratch data goes under $TMPDIR instead (the job
 #                       directory under the profile): /tmp is small there.
+#
+# Moved here when the image's /tmp defaults are still in effect (a value the
+# job set itself is kept):
+#
+#   HOME                /tmp -> $OSP_APP_SOCK_DIR/home
+#   XDG_CACHE_HOME      unset or /tmp/.cache -> $TMPDIR/<session dir name>/cache
 
 # Everything this session creates is private to it. The entrypoint sets this
 # too; it is repeated so that sourcing this file is enough on its own.
@@ -83,6 +89,25 @@ OSP_APP_SOCK_DIR="$(mktemp -d /tmp/osp-app-XXXXXXXX)" || {
 }
 chmod 0700 "$OSP_APP_SOCK_DIR"
 
+# HOME and XDG_CACHE_HOME. Images point them at fixed paths in /tmp
+# (ENV HOME=/tmp, XDG_CACHE_HOME=/tmp/.cache) so that something is writable
+# under a read-only .sif. Under the run profile /tmp is the session's own and
+# Apptainer sets the real HOME anyway, so there they do no harm. On a
+# node-shared /tmp (a run without the profile) they belong to whichever user
+# came first, and every later user's writes there fail. Where those defaults
+# are still in effect, the session gets its own: the home in the session
+# directory (small: settings and dotfiles), the cache under $TMPDIR, which has
+# room to grow (a cache holds nothing secret). With TMPDIR unset or /tmp, the
+# cache path is $OSP_APP_SOCK_DIR/cache. A value the job set itself is kept.
+if [ "${HOME:-/tmp}" = /tmp ]; then
+    HOME="$OSP_APP_SOCK_DIR/home"
+    mkdir -p "$HOME"
+fi
+if [ -z "${XDG_CACHE_HOME:-}" ] || [ "$XDG_CACHE_HOME" = /tmp/.cache ]; then
+    XDG_CACHE_HOME="${TMPDIR:-/tmp}/${OSP_APP_SOCK_DIR##*/}/cache"
+    mkdir -p "$XDG_CACHE_HOME" 2>/dev/null || XDG_CACHE_HOME="$OSP_APP_SOCK_DIR/cache"
+fi
+
 # `whoami`, `ls -l` and anything else calling getpwuid() needs a passwd entry,
 # and `docker run --user <uid>` hands the container a uid the image has never
 # heard of. Apptainer generates the entry for you; Docker does not. /etc/passwd
@@ -102,6 +127,7 @@ if ! id -un >/dev/null 2>&1; then
 fi
 
 export OSP_APP_PORT OSP_APP_BIND OSP_APP_TOKEN OSP_APP_TOKEN_NAME OSP_APP_SOCK_DIR
+export HOME XDG_CACHE_HOME
 
 # The port, for the job script. The token is printed only when it was
 # generated here (a local run, where nobody else knows it). When the launcher
