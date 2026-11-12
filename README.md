@@ -22,8 +22,19 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 apptainer pull oras://ghcr.io/onescienceplace/app-NAME-sif:latest
 # (fine for a quick try; a Tapis app definition pins <version>@sha256:<digest>)
-apptainer run app-NAME-sif_latest.sif --input in.dat
+
+# Apptainer, under the OSP batch run profile, as a Tapis job runs it: only
+# the working directory is visible, /tmp and $HOME are private and empty,
+# nothing from the host environment comes in, and bulk scratch goes to ./tmp.
+mkdir -p tmp
+apptainer run \
+  --contain --cleanenv --no-mount bind-paths,cwd \
+  --pwd "$PWD" --bind "$PWD:$PWD" --env TMPDIR="$PWD/tmp" \
+  app-NAME-sif_latest.sif --input in.dat
 ```
+
+The run profile goes in the Tapis app definition, never in the image; see
+§2a of [`CONVENTIONS.md`](CONVENTIONS.md).
 
 ## What's in here
 
@@ -44,16 +55,52 @@ has and install it in the Dockerfile.
 ## Interactive web and VNC apps
 
 If the app serves a browser UI — JupyterLab, RStudio, noVNC, ParaView over VNC —
-it must also honour the contract in [`web/README.md`](web/README.md): a
-per-session token arriving as `?<name>=<token>`, a single exposed port ≥ 1024,
-no root at run time, and TLS terminated upstream by the Satellite reverse proxy.
+it must also honor the contract in [`web/README.md`](web/README.md): a
+per-session token arriving as `?<name>=<token>`; exactly one TCP listener,
+on `$OSP_APP_BIND:$OSP_APP_PORT` (loopback by default, port ≥ 1024),
+checking that token; everything else the app runs internally on Unix sockets
+in the session's private directory `$OSP_APP_SOCK_DIR`; no root at run time;
+and TLS terminated upstream by the Satellite proxy.
 
-Two branches, both worked out in full elsewhere in this directory:
+Two branches, both sketched in `entrypoint.sh` and worked out in full in the
+apps named:
 
-- **A — native URL-token auth.** Bind the app straight to `OSP_APP_PORT` and hand it
-  the token. `app-jupyter` is the example.
-- **B — no URL-token auth.** Run the app on `127.0.0.1` and put the nginx token
-  gate on `OSP_APP_PORT` in front of it. `app-novnc` is the example.
+- **A — native URL-token auth.** Bind the app to `$OSP_APP_BIND:$OSP_APP_PORT`
+  and hand it the token through the environment (`JUPYTER_TOKEN`), never as
+  an argument. `app-jupyter` is the example.
+- **B — no URL-token auth.** Run the app on the Unix socket
+  `$OSP_APP_SOCK_DIR/app.sock` and put the nginx token gate on
+  `$OSP_APP_BIND:$OSP_APP_PORT` in front of it, both under
+  `web/supervise.sh`. `app-novnc` is the example.
+
+Run it the way production does: the token goes through the environment,
+never on a command line (`ps` shows command lines to everyone on the node).
+
+```bash
+export OSP_APP_TOKEN=$(openssl rand -hex 32)
+
+# Docker (local). -e OSP_APP_TOKEN with no "=value" copies it from your
+# environment. OSP_APP_BIND=0.0.0.0 because `-p` cannot reach a container's
+# loopback; the host side is still published on 127.0.0.1 only.
+docker run --rm --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:8080:8080 -v "$PWD:/data" \
+  -e OSP_APP_PORT=8080 -e OSP_APP_BIND=0.0.0.0 -e OSP_APP_TOKEN \
+  ghcr.io/onescienceplace/app-NAME:latest
+
+# Apptainer, under the OSP interactive run profile.
+# APPTAINERENV_<NAME> reaches the container as <NAME>, even with --cleanenv
+# (SingularityCE: SINGULARITYENV_<NAME>).
+mkdir -p tmp
+export APPTAINERENV_OSP_APP_TOKEN="$OSP_APP_TOKEN"
+apptainer run \
+  --contain --pid --ipc --cleanenv --no-mount bind-paths,cwd \
+  --pwd "$PWD" --bind "$PWD:$PWD" \
+  --env OSP_APP_PORT=8080 --env TMPDIR="$PWD/tmp" \
+  app-NAME-sif_latest.sif
+```
+
+Then open `http://127.0.0.1:8080/?token=<the token>` in a browser (add an
+`ssh -L 8080:127.0.0.1:8080 <host>` forward first if it runs elsewhere).
 
 Batch apps delete `web/` entirely.
 
@@ -61,11 +108,18 @@ Batch apps delete `web/` entirely.
 
 1. **Install everything at build time.** A `.sif` is read-only and compute
    nodes are often offline. Nothing may be downloaded on first use.
-2. **Scratch goes to `/tmp` or the working directory.** Never into `/app`.
-   Caches that default to `$HOME` need an env var pointing them elsewhere.
-3. **Do not trust an inherited path.** `$TMPDIR` usually points at a host
+2. **Two kinds of scratch, and never `/app`.** Secrets, sockets, rendered
+   config, pid files and logs go in `$OSP_APP_SOCK_DIR`, the session's
+   private directory under `/tmp` (small: about 64 MB under the run profile).
+   Caches and large temporary files go under `$TMPDIR`, which the run profile
+   points at the job directory; never a socket or a secret there. Caches that
+   default to `$HOME` need an environment variable pointing them elsewhere.
+3. **Do not trust an inherited path.** Under the run profile the app
+   definition sets `TMPDIR` deliberately; on a bare run it may point at a host
    directory (`/scratch/$USER/job.N`) that Apptainer does not bind, so probing
-   it beats assuming — `entrypoint.sh` walks `$TMPDIR`, `/tmp`, `$HOME`.
+   it beats assuming — `entrypoint.sh` walks `$TMPDIR`, `/tmp`, `$HOME`. Never
+   bind a scratch parent (`/scratch`) to make it work: that shows the
+   container every other job directory of the account.
 4. **Read and write relative to the current directory.** Docker sets it from
    `WORKDIR`; Apptainer ignores `WORKDIR` and uses the caller's directory.
    Baked-in assets are the exception — reference those by absolute path.
