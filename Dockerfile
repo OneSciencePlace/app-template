@@ -44,25 +44,44 @@ WORKDIR /app
 #     RUN curl -fsSL -o /app/model.bin https://example.org/model.bin
 
 # --- library scratch paths -------------------------------------------------
-# Anything that writes a cache into $HOME or the install tree must be sent to
-# /tmp, or it will fail under Apptainer. Add the ones your stack needs.
+# Anything that writes into $HOME or the install tree fails under a read-only
+# .sif, so it is sent to /tmp. Add the ones your stack needs. Under the OSP run
+# profile /tmp is private to the session but small (a tmpfs of about 64 MB):
+# a cache that can grow large belongs under $TMPDIR, which the profile points
+# at the job directory. Set such a path in entrypoint.sh, per session, not
+# here. Interactive apps need not do it for HOME and XDG_CACHE_HOME:
+# web/session-env.sh moves them off these defaults for each session.
 ENV HOME=/tmp \
     XDG_CACHE_HOME=/tmp/.cache \
     MPLCONFIGDIR=/tmp/matplotlib
 
 # --- interactive web / VNC apps only ---------------------------------------
 # Delete this block for batch apps. See web/README.md for the full contract.
-# The token gate needs nginx and envsubst; nothing else here is app-specific.
+# The token gate needs nginx (with auth_request, for /healthz) and envsubst.
+# A multi-process app sources web/supervise.sh, which needs bash >= 5.1:
+# ubuntu:26.04 has it, and listing it keeps that true if the base changes.
+# The check fails the build, not the session, if a package lacks either.
 #
 #     RUN apt-get update && apt-get install -y --no-install-recommends \
-#             nginx-light gettext-base \
+#             nginx-light gettext-base bash \
 #         && rm -rf /var/lib/apt/lists/*
+#     RUN nginx -V 2>&1 | grep -q http_auth_request_module \
+#         && bash -c '(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) ))'
 #     COPY web/ /app/web/
 #     RUN chmod 0755 /app/web/token-gate.sh /app/web/session-env.sh
 #
-# EXPOSE documents the single port; the real value comes from OSP_APP_PORT at run
-# time. Must be >= 1024 -- the container runs unprivileged and Satellite
-# refuses to proxy to privileged ports.
+# /etc/passwd and /etc/group group-writable, so web/session-env.sh can add an
+# entry for the runtime uid under `docker run --user "$(id -u):0"`. Read-only
+# under Apptainer, which supplies the entry itself. Safe only because the
+# image has no setuid programs (see the end of this file).
+#
+#     RUN chmod g=u /etc/passwd /etc/group
+#
+# The app behind the gate listens on $OSP_APP_SOCK_DIR/app.sock, a Unix
+# socket, so there is no upstream port to set (OSP_APP_UPSTREAM_PORT is
+# retired). EXPOSE documents the single port; the real value comes from
+# OSP_APP_PORT at run time. Must be >= 1024 -- the container runs unprivileged
+# and the Satellite proxy refuses to proxy to privileged ports.
 #
 #     ENV OSP_APP_PORT=8080
 #     EXPOSE 8080
@@ -80,9 +99,16 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod -R a+rX /app && chmod 0755 /app/entrypoint.sh
 # COPY your source / binaries into /app here.
 
-# Job inputs and outputs are staged into the working directory. Docker honours
+# Job inputs and outputs are staged into the working directory. Docker honors
 # this; Apptainer uses the caller's directory instead. Either way the app must
 # work off relative paths.
+# No setuid or setgid programs. An interactive image makes /etc/passwd
+# group-writable (above); under a plain `docker run` without
+# no-new-privileges, that plus a setuid `su` is a way to root inside the
+# container. Apptainer mounts the image nosuid anyway. Keep this after the
+# last package install.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true
+
 # /data is a mount point. Make it writable by whoever runs the container, so a
 # run without a bind mount still works for a non-root user.
 RUN mkdir -p /data && chmod 1777 /data
