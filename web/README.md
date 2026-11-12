@@ -176,9 +176,10 @@ The third argument is the program name the kernel reports
 - Each launch is **checked**: the pid must lead its own group and run the
   expected program, not a wrapper that has already handed off.
 - **critical** and **leader** services end the session when they exit
-  (`wait -n`, no polling); a **leader** exiting 0 is a normal log-out (status
-  0), anything else is status 1, SIGTERM is 143. **helpers** are only stopped
-  at the end.
+  (`wait -n`, no polling), even one that died while the rest of the session
+  was still starting: each round first checks that every watched service is
+  alive. A **leader** exiting 0 is a normal log-out (status 0), anything else
+  is status 1, SIGTERM is 143. **helpers** are only stopped at the end.
 - Cleanup sends TERM in reverse start order, the first-registered service
   last, then KILL to whatever ignored it, then removes `$OSP_APP_SOCK_DIR`.
 - Output is relayed to stderr with a `[name] ` prefix, so Tapis captures it.
