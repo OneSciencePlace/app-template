@@ -1,17 +1,16 @@
 #!/bin/sh
 # token-gate.sh - start the nginx token gate in the foreground.
 #
-# For apps with NO native URL-token auth (noVNC, RStudio, ParaView-over-VNC).
-# Apps that have one -- JupyterLab and its JUPYTER_TOKEN -- bind OSP_APP_BIND:
-# OSP_APP_PORT themselves and skip this entirely.
+# Every interactive app sits behind it: noVNC, JupyterLab (its own token off),
+# RStudio, ParaView-over-VNC. The gate is the session's authentication.
 #
 # Layout:
 #   $OSP_APP_BIND:$OSP_APP_PORT     nginx  <- the only TCP listener in the session
 #   $OSP_APP_SOCK_DIR/app.sock      the real app, a Unix socket: no port at all
 #
-# Start the app first, listening on $OSP_APP_SOCK_DIR/app.sock, then either
-# `exec` this (a single-process app) or start it as one more supervised service
-# (web/supervise.sh). Either way it ends by exec'ing nginx, so its pid IS nginx.
+# Start the app first, listening on $OSP_APP_SOCK_DIR/app.sock, then start this
+# as one more supervised service (web/supervise.sh). It ends by exec'ing nginx,
+# so its pid IS nginx.
 set -eu
 
 : "${OSP_APP_SOCK_DIR:?source web/session-env.sh first}"
@@ -48,6 +47,16 @@ envsubst '${OSP_APP_PORT} ${OSP_APP_BIND} ${OSP_APP_TOKEN} ${OSP_APP_TOKEN_NAME}
     < /app/web/nginx.conf.template > "$NGINX_DIR/nginx.conf"
 
 # -e stderr: nginx opens its default error log before it reads the config,
-# and that default is inside the read-only image.
-nginx -e stderr -t -q -c "$NGINX_DIR/nginx.conf"
-exec nginx -e stderr -c "$NGINX_DIR/nginx.conf"
+# and that default is inside the read-only image. nginx older than 1.19.5 has
+# no -e; without it nginx may warn that it cannot open that file, and carries
+# on with the config's own `error_log stderr` (tested without -e: works).
+_e=""
+_v=$(nginx -v 2>&1 | sed -n 's|.*nginx/\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*|\1|p')
+_maj=${_v%%.*}; _rest=${_v#*.}; _min=${_rest%%.*}; _pat=${_rest#*.}
+if [ -n "$_v" ] && { [ "$_maj" -gt 1 ] || { [ "$_maj" -eq 1 ] && { [ "$_min" -gt 19 ] || { [ "$_min" -eq 19 ] && [ "$_pat" -ge 5 ]; }; }; }; }; then
+    _e="-e stderr"
+fi
+# shellcheck disable=SC2086  # $_e is empty or two words, on purpose
+nginx $_e -t -q -c "$NGINX_DIR/nginx.conf"
+# shellcheck disable=SC2086
+exec nginx $_e -c "$NGINX_DIR/nginx.conf"

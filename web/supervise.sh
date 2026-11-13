@@ -34,7 +34,8 @@
 #   * Service output goes to the entrypoint's stderr, one "[name] " prefix per
 #     line, so Tapis captures it with the job and nothing is written to disk.
 #
-# Requires bash >= 5.1 (wait -n -p). Ubuntu 26.04 ships 5.2 or newer.
+# Requires bash >= 5.1 (wait -n -p) and setsid; nothing else beyond /proc.
+# web/check-deps.sh checks both at image build.
 
 if [ -z "${BASH_VERSION:-}" ]; then
     echo "[supervise] web/supervise.sh must be sourced from bash" >&2
@@ -77,6 +78,17 @@ _osp_comm() {
     printf '%s' "$c"
 }
 
+# Copy stdin to stderr, a line at a time, each line prefixed "[NAME] ". Plain
+# bash, so it works on any base image (BusyBox's sed has no -u, and an
+# unbuffered sed is what this used to need); a last line without a newline is
+# kept too.
+_osp_prefix() {
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        printf '[%s] %s\n' "$1" "$line"
+    done
+}
+
 # osp_start NAME -- COMMAND [ARGS...]
 # Start COMMAND in its own session and process group, stdin from /dev/null,
 # output relayed to our stderr with a "[NAME] " prefix. Sets OSP_PID.
@@ -86,7 +98,7 @@ osp_start() {
     case "$name" in ''|*[!A-Za-z0-9_.-]*) osp_log "bad service name '$name'"; return 1 ;; esac
     # In a non-interactive shell a background child is not a process-group
     # leader, so setsid calls setsid() and execs in place: $! is the service.
-    setsid "$@" > >(sed -u "s/^/[$name] /" >&2) 2>&1 < /dev/null &
+    setsid "$@" > >(_osp_prefix "$name" >&2) 2>&1 < /dev/null &
     OSP_PID=$!
 }
 

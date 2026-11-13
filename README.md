@@ -43,7 +43,8 @@ The run profile goes in the Tapis app definition, never in the image; see
 | `Dockerfile` | Base image + all dependencies, installed at build time. |
 | `entrypoint.sh` | The image ENTRYPOINT. Passes `"$@"` through to the real program. |
 | `.github/workflows/build-and-push.yml` | App-agnostic. Copy verbatim; the only knob is `APPTAINER_VERSION`. |
-| `web/` | Interactive web/VNC apps only — the token gate and session contract. Delete for batch apps. |
+| `web/` | The interactive session contract and token gate. The source of the `app-kit` image: apps copy these files from that image (`COPY --from`), not from here. |
+| `kit/Dockerfile`, `.github/workflows/kit.yml` | Build and publish `ghcr.io/onescienceplace/app-kit` from `web/`, with the template's version. In this repository only. |
 
 The app itself can be anything — a Python script, an R script, a compiled
 solver, a headless GUI tool, vendor scientific software. Only two files know
@@ -62,16 +63,11 @@ checking that token; everything else the app runs internally on Unix sockets
 in the session's private directory `$OSP_APP_SOCK_DIR`; no root at run time;
 and TLS terminated upstream by the Satellite proxy.
 
-Two branches, both sketched in `entrypoint.sh` and worked out in full in the
-apps named:
-
-- **A — native URL-token auth.** Bind the app to `$OSP_APP_BIND:$OSP_APP_PORT`
-  and hand it the token through the environment (`JUPYTER_TOKEN`), never as
-  an argument. `app-jupyter` is the example.
-- **B — no URL-token auth.** Run the app on the Unix socket
-  `$OSP_APP_SOCK_DIR/app.sock` and put the nginx token gate on
-  `$OSP_APP_BIND:$OSP_APP_PORT` in front of it, both under
-  `web/supervise.sh`. `app-novnc` is the example.
+One shape for all of them, sketched in `entrypoint.sh`: the app listens on
+the Unix socket `$OSP_APP_SOCK_DIR/app.sock`, and the nginx token gate on
+`$OSP_APP_BIND:$OSP_APP_PORT` checks the token and proxies to it, both under
+`web/supervise.sh`. An app with a login of its own (JupyterLab) turns it off
+behind the gate. `app-jupyter` and `app-novnc` are the worked examples.
 
 Run it the way production does: the token goes through the environment,
 never on a command line (`ps` shows command lines to everyone on the node).
@@ -102,7 +98,9 @@ apptainer run \
 Then open `http://127.0.0.1:8080/?token=<the token>` in a browser (add an
 `ssh -L 8080:127.0.0.1:8080 <host>` forward first if it runs elsewhere).
 
-Batch apps delete `web/` entirely.
+An interactive app's `Dockerfile` takes these files from the kit image,
+pinned (the commented interactive block in the `Dockerfile` shows how), so a
+fix to them reaches an app by bumping one line.
 
 ## The four rules an app must follow
 
@@ -127,9 +125,11 @@ Batch apps delete `web/` entirely.
 ## To create a new app from this template
 
 1. `cp -r app-template app-NAME && cd app-NAME`
-2. Edit `Dockerfile`, `entrypoint.sh`, and this README; add your source.
-3. `git init -b main && git add -A && git commit -m "initial app-NAME"`
-4. `gh repo create OneSciencePlace/app-NAME --public --source=. --push`
+2. `rm -r CONVENTIONS.md web kit .github/workflows/kit.yml` — they belong to
+   the template. An interactive app gets `web/` from the kit image instead.
+3. Edit `Dockerfile`, `entrypoint.sh`, and this README; add your source.
+4. `git init -b main && git add -A && git commit -m "initial app-NAME"`
+5. `gh repo create OneSciencePlace/app-NAME --public --source=. --push`
 
 The workflow file needs no edits — it derives every name from
 `${{ github.repository }}`.

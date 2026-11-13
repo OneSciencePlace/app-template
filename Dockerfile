@@ -57,18 +57,26 @@ ENV HOME=/tmp \
 
 # --- interactive web / VNC apps only ---------------------------------------
 # Delete this block for batch apps. See web/README.md for the full contract.
-# The token gate needs nginx (with auth_request, for /healthz) and envsubst.
-# A multi-process app sources web/supervise.sh, which needs bash >= 5.1:
-# ubuntu:26.04 has it, and listing it keeps that true if the base changes.
-# The check fails the build, not the session, if a package lacks either.
+# The session files (web/) come from the template's kit image, not from a copy
+# in the app's repository. Put this line at the very top of the file, before
+# the FROM above, with the kit's version and digest:
+#
+#     FROM ghcr.io/onescienceplace/app-kit:<version>@sha256:<digest> AS kit
+#
+# The gate needs nginx >= 1.19.5 with auth_request (for /healthz) and envsubst;
+# the supervisor needs bash >= 5.1 and setsid. ubuntu:26.04 has bash and
+# setsid; listing bash keeps that true if the base changes. Other bases:
+# Debian and the RHEL family call the package `nginx` (and `gettext`), Alpine
+# needs `bash nginx gettext-envsubst` added. web/check-deps.sh fails the
+# build, not a session, if anything is missing, and says what.
 #
 #     RUN apt-get update && apt-get install -y --no-install-recommends \
 #             nginx-light gettext-base bash \
 #         && rm -rf /var/lib/apt/lists/*
-#     RUN nginx -V 2>&1 | grep -q http_auth_request_module \
-#         && bash -c '(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) ))'
-#     COPY web/ /app/web/
-#     RUN chmod 0755 /app/web/token-gate.sh /app/web/session-env.sh
+#     COPY --from=kit /app/web/ /app/web/
+#     RUN /app/web/check-deps.sh
+#
+# The kit's files arrive with their modes already set.
 #
 # /etc/passwd and /etc/group group-writable, so web/session-env.sh can add an
 # entry for the runtime uid under `docker run --user "$(id -u):0"`. Read-only

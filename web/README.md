@@ -1,17 +1,45 @@
 # web/ — the interactive-app contract
 
-Drop this directory into any `app-*` repo that serves a browser UI: JupyterLab,
-RStudio, noVNC, ParaView layered on VNC. Delete it for batch apps.
+The session files for any `app-*` image that serves a browser UI: JupyterLab,
+RStudio, noVNC, ParaView layered on VNC. They live here, in `app-template`, and
+reach every app through the kit image `ghcr.io/onescienceplace/app-kit`, built
+from this directory (`kit/Dockerfile`) with the template's version:
+
+```dockerfile
+FROM ghcr.io/onescienceplace/app-kit:<version>@sha256:<digest> AS kit
+FROM ubuntu:26.04
+# ...
+COPY --from=kit /app/web/ /app/web/
+```
+
+They arrive at `/app/web/` with their modes set. Batch apps take none of it.
+
+The files are text, so the kit works with any Linux base image of any
+architecture that has what they call:
+
+| Part | Needs |
+|---|---|
+| `session-env.sh` | POSIX `sh`, `id`, `mkdir`, `chmod`, `mktemp`, `od`, `tr`, `/proc` (BusyBox is enough) |
+| `token-gate.sh`, `nginx.conf.template` | nginx built with `http_auth_request_module`; `envsubst`; `sed` (nginx older than 1.19.5 works too, without `-e stderr`) |
+| `supervise.sh` | bash ≥ 5.1, `setsid` |
+
+By their package versions, Ubuntu 22.04 and later, Debian 11 and later, the
+RHEL family from 9 and Alpine (with `bash nginx gettext-envsubst` added) have
+all of it (tested: Ubuntu 26.04 and 24.04, and BusyBox for `session-env.sh`);
+RHEL 8 and Ubuntu 20.04 have bash older than 5.1. Run `RUN /app/web/check-deps.sh` once the
+image's packages are in: it fails the build, naming what is missing.
 
 | File | Used by | What it is |
 |---|---|---|
 | `session-env.sh` | every interactive app (sourced) | the variables, their validation, the session's private directory |
-| `token-gate.sh` | branch B | renders the nginx config and execs nginx |
-| `nginx.conf.template` | branch B | the token gate |
-| `supervise.sh` | multi-process apps (sourced, bash) | starts, watches and stops the session's processes |
+| `token-gate.sh` | every interactive app | renders the nginx config and execs nginx |
+| `nginx.conf.template` | every interactive app | the token gate |
+| `supervise.sh` | every interactive app (sourced, bash) | starts, watches and stops the session's processes: the app and the gate at least |
+| `check-deps.sh` | every interactive image, at build | fails the build if the image lacks what these files need |
 
-Copy the files unedited. A fix made here reaches every app the next time
-`web/` is copied.
+Never copy or edit them in an app's repository. A fix made here is released
+with the template, and reaches an app when its `Dockerfile` names the new kit
+version.
 
 ## The constraints
 
@@ -43,7 +71,7 @@ that system; or, under Docker, with OSP's Docker run profile (`--user`,
 on a network of the job's own, where the gate binds `0.0.0.0` because nothing
 else is on that network. Both profiles are in `CONVENTIONS.md` §2a. The session token is present
 in the rendered `nginx.conf` and in the environment of the session's
-processes. The branch-B upstream is a Unix socket in `$OSP_APP_SOCK_DIR` under
+processes. The app behind it is a Unix socket in `$OSP_APP_SOCK_DIR` under
 the session's private `/tmp`, never a TCP port. Sessions that share a Unix uid
 on a node without these namespaces, or with any directory bound into both, are
 a single trust domain; the gate does not protect them from each other. The
@@ -64,7 +92,7 @@ deliberately malicious native code.
 | `OSP_APP_BIND` | `127.0.0.1` | caller | the address it binds; `0.0.0.0` only inside a Docker job's own network, or for local `docker run -p` |
 | `OSP_APP_TOKEN` | generated | caller | the per-session secret, `[A-Za-z0-9._~-]` |
 | `OSP_APP_TOKEN_NAME` | `token` | caller | the query parameter it arrives in, `[A-Za-z0-9_]` |
-| `OSP_APP_HEALTH_PATH` | empty (`/`) | the app | what `/healthz` asks the upstream for (branch B) |
+| `OSP_APP_HEALTH_PATH` | empty (`/`) | the app | what `/healthz` asks the app for (`vnc.html` for noVNC, `api` for JupyterLab) |
 | `OSP_APP_SOCK_DIR` | — | `session-env.sh` | fresh `0700` directory under `/tmp`; never taken from the caller |
 
 `OSP_APP_UPSTREAM_PORT` is gone: the upstream is `$OSP_APP_SOCK_DIR/app.sock`.
@@ -113,25 +141,25 @@ in effect, `session-env.sh` gives the session its own: `HOME` becomes
 `TMPDIR` is unset or `/tmp`). Values the job set itself, including the real
 `HOME` Apptainer provides, are kept.
 
-## The two branches
+## One shape
 
-**A — the app already has URL-token auth.** JupyterLab is the case: it reads
-`?token=`, which is why `OSP_APP_TOKEN_NAME` defaults to `token`. Bind the app
-to `$OSP_APP_BIND:$OSP_APP_PORT` (not `0.0.0.0`), pass it the token through
-the environment (`JUPYTER_TOKEN`), and delete `nginx.conf.template`,
-`token-gate.sh` and `supervise.sh`. See `app-jupyter`.
-
-**B — the app has no URL-token auth.** noVNC, RStudio and ParaView all fall
-here. Start the app listening on `$OSP_APP_SOCK_DIR/app.sock`, then start
+Every interactive app — noVNC, JupyterLab, RStudio, ParaView — starts the app
+listening on `$OSP_APP_SOCK_DIR/app.sock`, waits for the socket, then starts
 `token-gate.sh`, which renders `nginx.conf.template` and runs nginx on
-`$OSP_APP_BIND:$OSP_APP_PORT`. A single-process app can simply
-`exec /app/web/token-gate.sh`; a multi-process app starts it as one more
-supervised service. See `app-novnc`.
+`$OSP_APP_BIND:$OSP_APP_PORT`; both run under `supervise.sh`. The app is
+started without `OSP_APP_TOKEN` in its environment (`env -u OSP_APP_TOKEN`):
+only the gate needs it.
+
+An app with a login of its own turns it off behind the gate. JupyterLab is the
+case: `--ServerApp.sock="$OSP_APP_SOCK_DIR/app.sock"`,
+`--IdentityProvider.token=`, `allow_remote_access`, `trust_xheaders`; the gate
+asks it for `/api` (`OSP_APP_HEALTH_PATH=api`). See `app-jupyter`; a desktop is
+`app-novnc`.
 
 ## What the gate does
 
 ```
-browser ──https──▶ Satellite ──ssh tunnel──▶ 127.0.0.1:OSP_APP_PORT   nginx gate
+browser ──https──▶ Satellite proxy ──ssh tunnel──▶ 127.0.0.1:OSP_APP_PORT   nginx gate
                                                     │
                                                     ▼
                                     $OSP_APP_SOCK_DIR/app.sock          the app
