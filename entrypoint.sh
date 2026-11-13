@@ -92,64 +92,40 @@ exec /app/bin/app "$@"
 
 # === INTERACTIVE WEB / VNC APPS ============================================
 # JupyterLab, RStudio, noVNC, ParaView-over-VNC and friends. Delete the batch
-# section above, uncomment ONE of the two branches below, and see web/README.md.
+# section above, uncomment the block below, and see web/README.md. web/ comes
+# from the kit image (the Dockerfile's interactive block).
 #
-# . /app/web/session-env.sh
-#     # Sets OSP_APP_PORT, OSP_APP_BIND, OSP_APP_TOKEN, OSP_APP_TOKEN_NAME;
-#     # creates OSP_APP_SOCK_DIR; moves HOME and XDG_CACHE_HOME off the
-#     # image's /tmp defaults.
-#
-# --- branch A: the app has native ?token= auth (JupyterLab) -----------------
-# No gate: the app itself is the one TCP listener. Bind it to $OSP_APP_BIND
-# (127.0.0.1 unless the caller says otherwise; never a hard-coded 0.0.0.0) and
-# hand it the token through the environment, never as an argument: `ps` shows
-# every argument to everyone on the node. allow_remote_access lets a
-# loopback-bound Jupyter accept the Satellite proxy's public Host header.
-# Jupyter's runtime files (kernel connection files hold HMAC keys) go in the
-# session directory.
-#
-#   export JUPYTER_TOKEN="$OSP_APP_TOKEN"
-#   export JUPYTER_RUNTIME_DIR="$OSP_APP_SOCK_DIR/jupyter/runtime"
-#   exec jupyter lab --no-browser \
-#                    --ServerApp.ip="${OSP_APP_BIND}" \
-#                    --ServerApp.port="${OSP_APP_PORT}" \
-#                    --ServerApp.allow_remote_access=True "$@"
-#
-# Check the start-up banner once: it must not print the token into the job's
-# output.
-#
-# --- branch B: the app has no URL-token auth (noVNC, RStudio, ParaView) -----
-# The app listens on a Unix socket in the session directory, never on a TCP
-# port, not even 127.0.0.1. The nginx gate (web/token-gate.sh) is the one TCP
-# listener, on $OSP_APP_BIND:$OSP_APP_PORT: it checks ?<OSP_APP_TOKEN_NAME>=,
-# trades it for an HttpOnly cookie, and proxies everything (websockets
-# included) to $OSP_APP_SOCK_DIR/app.sock.
+# Every interactive app has the same shape. The app listens on a Unix socket
+# in the session directory, never on a TCP port, not even 127.0.0.1. The nginx
+# gate (web/token-gate.sh) is the one TCP listener, on
+# $OSP_APP_BIND:$OSP_APP_PORT: it checks ?<OSP_APP_TOKEN_NAME>=, trades it for
+# an HttpOnly cookie, and proxies everything (websockets included) to
+# $OSP_APP_SOCK_DIR/app.sock. An app with a login of its own (JupyterLab's
+# token) turns it off: the gate is the authentication.
 #
 # The app and the gate are two processes, so the supervisor runs them: the
 # session ends when either exits, and a cancel stops both. supervise.sh needs
-# bash >= 5.1, so change the first line of this file to #!/bin/bash.
+# bash >= 5.1, so change the first line of this file to #!/bin/bash. The app
+# starts without OSP_APP_TOKEN in its environment (env -u): only the gate needs
+# it.
 #
+#   . /app/web/session-env.sh                    # the variables; creates OSP_APP_SOCK_DIR
 #   . /app/web/supervise.sh                      # installs the cleanup trap first
 #   export OSP_APP_HEALTH_PATH=""                # what /healthz asks the app for ("" = /)
-#   osp_spawn critical app  the_app -- the_app --listen "unix:$OSP_APP_SOCK_DIR/app.sock"
+#   osp_spawn leader app the_app -- env -u OSP_APP_TOKEN \
+#       the_app --listen "unix:$OSP_APP_SOCK_DIR/app.sock"
 #   _i=0                                         # no gate until the app is listening
 #   until [ -S "$OSP_APP_SOCK_DIR/app.sock" ]; do
 #       _i=$((_i + 1))
-#       [ "$_i" -lt 100 ] || { echo "[app] the app did not start" >&2; exit 1; }
+#       [ "$_i" -lt 300 ] || { echo "[app] the app did not start" >&2; exit 1; }
 #       sleep 0.1
 #   done
-#   osp_spawn critical gate nginx   -- /app/web/token-gate.sh
+#   osp_spawn critical gate nginx -- /app/web/token-gate.sh
 #   osp_supervise                                # never returns
 #
 # The third argument of osp_spawn is the program name the kernel reports
-# (/proc/<pid>/comm). A desktop adds its X server, window manager and
-# websockify the same way: see app-novnc.
-#
-# A shortcut, for an app that is one process and may go unwatched (sh is
-# enough):
-#
-#   the_app --listen "unix:$OSP_APP_SOCK_DIR/app.sock" &
-#   exec /app/web/token-gate.sh
-#
-# The gate is then the only process watched: if the app exits, the session
-# carries on, answering 502, until it is canceled. Prefer the supervisor.
+# (/proc/<pid>/comm) once env has handed over. `leader` makes the app's clean
+# exit a normal log-out (status 0); use `critical` for an app without one.
+# Worked examples: app-jupyter (JupyterLab on --ServerApp.sock, its own token
+# off) and app-novnc (a desktop: X server, window manager and websockify the
+# same way).

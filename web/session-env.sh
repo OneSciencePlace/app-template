@@ -19,7 +19,7 @@
 #                       `docker run` still works.
 #   OSP_APP_TOKEN_NAME  the query parameter the token arrives in, so the entry
 #                       URL is  https://<session-label>.<sat-id>.sat.<domain>/?<name>=<token>
-#                       Default `token`, which is what JupyterLab uses natively.
+#                       Default `token` (JupyterLab's own parameter name).
 #                       nginx maps it to $arg_<name> / $cookie_<name>, so it is
 #                       restricted to [A-Za-z0-9_].
 #
@@ -53,9 +53,9 @@ case "$OSP_APP_PORT" in
 esac
 [ "$OSP_APP_PORT" -ge 1024 ] || { echo "[session] OSP_APP_PORT must be >= 1024 (unprivileged)" >&2; exit 1; }
 
-# These three are substituted into nginx's configuration (branch B) or handed
-# to the app (branch A). Restricting their characters means none of them can
-# ever change the meaning of the configuration they are written into.
+# These three are substituted into the gate's nginx configuration. Restricting
+# their characters means none of them can ever change the meaning of the
+# configuration they are written into.
 case "$OSP_APP_TOKEN_NAME" in
     ''|*[!A-Za-z0-9_]*) echo "[session] OSP_APP_TOKEN_NAME must match [A-Za-z0-9_]+, got '$OSP_APP_TOKEN_NAME'" >&2; exit 1 ;;
 esac

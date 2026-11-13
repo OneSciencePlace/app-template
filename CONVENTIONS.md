@@ -23,12 +23,12 @@ security model below (`design/app-hardening/`).
 - **Design rationale, diagrams, rollout steps:** <https://claude.ai/code/artifact/0d075c28-9523-4374-9dc1-8be504fa31f2>
 - **Layout:** `app-template/` is the copy-me skeleton (not a deployable app).
   Worked examples:
-  `app-object-detection` (batch), `app-jupyter` (interactive, native token),
-  `app-novnc` (interactive, gated).
-  The same detector wrapped in each interactive branch:
-  `app-object-detection-jupyter` (branch A, a tutorial notebook),
+  `app-object-detection` (batch), `app-jupyter` (web: JupyterLab behind the
+  gate), `app-novnc` (desktop: a VNC desktop behind the gate).
+  The same detector wrapped in each kind of interactive app:
+  `app-object-detection-jupyter` (web, a tutorial notebook),
   `app-object-detection-novnc-pcmanfm` and `app-object-detection-novnc-xfce`
-  (branch B, one desktop app on a light and a full desktop stack; identical
+  (desktop, one desktop app on a light and a full desktop stack; identical
   below the desktop layer, and each README carries the comparison).
 - **Status of the examples.** `app-template` and `app-novnc` (from `1.0.0`)
   follow this document. The other examples are being brought in line; until
@@ -45,6 +45,7 @@ security model below (`design/app-hardening/`).
 | repo | `github.com/OneSciencePlace/app-<thing>` |
 | image | `ghcr.io/onescienceplace/app-<thing>` |
 | sif | `ghcr.io/onescienceplace/app-<thing>-sif` |
+| kit | `ghcr.io/onescienceplace/app-kit` (built from `app-template`'s `web/` only, §4a) |
 | tags | a push to `main`: `latest`; a manual run on another branch: `sha-<short>`; a `v<version>` git tag: `<version>`. The image also gets `sha-<short>` on every run |
 
 `.github/workflows/build-and-push.yml` never mentions the app. It reads
@@ -278,8 +279,8 @@ view, `LD_LIBRARY_PATH` for a vendored solver).
 
 ### The exception: an app that is several processes
 
-A desktop is an X server, a window manager, websockify and the gate; a branch-B
-app (§4a) is at least the app and the gate. There is no single real program to
+A desktop is an X server, a window manager, websockify and the gate; every
+interactive app (§4a) is at least the app and the gate. There is no single real program to
 `exec` into, and `exec`ing one of them discards the shell that owns the rest —
 along with its `trap`.
 
@@ -291,7 +292,7 @@ namespace went away — and under Apptainer without `--pid`, where there is no
 namespace to go away, not even that.
 
 So a multi-process app's entrypoint stays and supervises, with the shared
-`web/supervise.sh`, copied unedited from the template. The entrypoint is bash
+`web/supervise.sh`, which the image takes from the kit (§4a). The entrypoint is bash
 (≥ 5.1, for `wait -n -p`) and sources it after `web/session-env.sh`:
 
 ```bash
@@ -368,9 +369,9 @@ trap exists for JAX, ONNX Runtime and TensorFlow.
 ## 4a. Interactive web and VNC apps
 
 Anything serving a browser UI — JupyterLab, RStudio, noVNC, ParaView layered on
-VNC — carries `web/` from the template and obeys four extra constraints, set by
-the Satellite proxy, by running unprivileged on a compute node, and by sharing
-that node with other sessions of the same account (§2a).
+VNC — takes `web/` from the template's kit image and obeys four extra
+constraints, set by the Satellite proxy, by running unprivileged on a compute
+node, and by sharing that node with other sessions of the same account (§2a).
 
 1. **Per-session token auth, in the URL.** The user opens
    `https://<session-label>.<sat-id>.sat.<domain>/?<OSP_APP_TOKEN_NAME>=<OSP_APP_TOKEN>`.
@@ -399,6 +400,40 @@ apps do *not* need `--base-url` or prefix support. They do need
 `X-Forwarded-Proto: https`, or they generate `ws://` URLs on an `https://` page
 and the browser refuses them.
 
+### The kit: `web/` comes from an image, not a copy
+
+The session files — `session-env.sh`, `supervise.sh`, `token-gate.sh`,
+`nginx.conf.template` — are written once, in `app-template/web/`, and published
+as a files-only image, `ghcr.io/onescienceplace/app-kit`, with the template's
+version (git tag `v1.1.0` publishes `app-kit:1.1.0`; `kit/Dockerfile`,
+`.github/workflows/kit.yml`). An app copies them from it, pinned by tag and
+digest like any other input:
+
+```dockerfile
+FROM ghcr.io/onescienceplace/app-kit:<version>@sha256:<digest> AS kit
+FROM python:3.14-slim
+# ...
+COPY --from=kit /app/web/ /app/web/
+```
+
+An app repository has no `web/` directory, so there is nothing to drift and
+nothing to edit locally. A fix reaches an app when its `Dockerfile` names the
+new kit: a new image digest, so a new image validation, which is the point.
+The files arrive at `/app/web/` with their modes set (the executed scripts
+`0755`), owned by root.
+
+**Any base image, given the tools.** The kit is text, so it suits any Linux
+base image of any architecture that has what the files call: a POSIX shell
+and the usual small tools (BusyBox is enough) for `session-env.sh`; nginx with
+`http_auth_request_module`, `envsubst` and `sed` for the gate; bash ≥ 5.1 and
+`setsid` for the supervisor. By their package versions that covers Ubuntu
+22.04 on, Debian 11 on, the RHEL family from 9 and Alpine (adding
+`bash nginx gettext-envsubst`); RHEL 8 and Ubuntu 20.04 lack bash 5.1. Every interactive image runs
+`RUN /app/web/check-deps.sh` after installing its packages, so a missing
+piece fails the build with its name, not a session on a compute node. Apps released before the kit (`app-novnc` `1.0.0`, the
+object-detection desktops) still carry a copy of `web/` until their next
+release.
+
 ### The variables
 
 | Variable | Default | Set by | Meaning |
@@ -407,10 +442,10 @@ and the browser refuses them.
 | `OSP_APP_BIND` | `127.0.0.1` | caller | the address it binds |
 | `OSP_APP_TOKEN` | generated | caller | the per-session secret: at most 200 characters of `[A-Za-z0-9._~-]` |
 | `OSP_APP_TOKEN_NAME` | `token` | caller | the query parameter it arrives in, `[A-Za-z0-9_]` |
-| `OSP_APP_HEALTH_PATH` | empty (`/`) | the app's entrypoint | what `/healthz` asks the upstream for (branch B; `vnc.html` for noVNC) |
+| `OSP_APP_HEALTH_PATH` | empty (`/`) | the app's entrypoint | what the gate's `/healthz` asks the app for (`vnc.html` for noVNC, `api` for JupyterLab) |
 | `OSP_APP_SOCK_DIR` | — | `session-env.sh` | a fresh `0700` directory under `/tmp`; never taken from the caller |
 
-`OSP_APP_UPSTREAM_PORT` is retired: the branch-B upstream is
+`OSP_APP_UPSTREAM_PORT` is retired: the app behind the gate is
 `$OSP_APP_SOCK_DIR/app.sock`.
 
 **The token never goes on a command line**, not even the
@@ -431,36 +466,37 @@ creates `$OSP_APP_SOCK_DIR`, moves `HOME` and `XDG_CACHE_HOME` off the image's
 never echoed into the job's output.
 
 `OSP_APP_TOKEN_NAME` is **per-app and configurable**. It defaults to `token`
-because that is what JupyterLab uses natively. nginx maps it to `$arg_<name>`
+(JupyterLab's own parameter name, so links people know keep working). nginx maps it to `$arg_<name>`
 and `$cookie_<name>`, so keep it to `[A-Za-z0-9_]` — a dash silently becomes an
 underscore.
 
-### Two branches
+### One shape: the app on a Unix socket, the gate in front
 
-Both are sketched in the template's `entrypoint.sh`.
-
-**A — the app has native URL-token auth.** The app itself is the one listener:
-bind it to `$OSP_APP_BIND:$OSP_APP_PORT` (never a hard-coded `0.0.0.0`), and
-hand it the token through the environment (`JUPYTER_TOKEN`), not as an
-argument. Delete the gate files. JupyterLab also needs
-`--ServerApp.allow_remote_access=True`, or a loopback-bound server rejects the
-Satellite proxy's public `Host` header. `app-jupyter`.
-
-**B — the app has none.** The app listens on the Unix socket
-`$OSP_APP_SOCK_DIR/app.sock`; `web/token-gate.sh` renders
+Every interactive app has the same shape, sketched in the template's
+`entrypoint.sh`. The app listens on the Unix socket
+`$OSP_APP_SOCK_DIR/app.sock`, never on TCP; `web/token-gate.sh` renders
 `web/nginx.conf.template` and runs nginx on `$OSP_APP_BIND:$OSP_APP_PORT` in
 front of it. The app and the gate are two processes, so they run under
-`web/supervise.sh` (§3), the gate started once the app's socket exists. A
-one-process app may instead start the app in the background and
-`exec /app/web/token-gate.sh`, accepting that nothing then notices the app
-exiting. `app-novnc`.
+`web/supervise.sh` (§3), the gate started once the app's socket exists, and
+the app is started without `OSP_APP_TOKEN` in its environment: only the gate
+holds the secret. The app's clean exit is a log-out where it has one
+(JupyterLab's **File > Shut Down**; a desktop's **Exit**).
 
-Whichever branch, the rule holds: **every interactive service binds loopback
-or a Unix socket, gated or not.** Authentication on the app does not make a
-`0.0.0.0` listener acceptable.
+**An app with a login of its own turns it off.** JupyterLab has its own
+`?token=`; behind the gate it runs with `--IdentityProvider.token=` (and no
+password), on `--ServerApp.sock`, with `allow_remote_access` and
+`trust_xheaders` so it accepts the Satellite proxy's `Host` and scheme. Its
+socket is reachable only from inside the session, the same as noVNC's
+websockify; its XSRF protection stays on. `app-jupyter`, `app-novnc`.
 
-Branch B is not a workaround for noVNC in particular, and the gate is not
-redundant with auth the app already ships. websockify is the instructive case,
+Earlier versions let an app with its own token login bind the TCP port itself
+("branch A"). That is retired: it gave every such app its own readiness path
+(Jupyter has no `/healthz`), its own validation, its own TCP listener and its
+own handling of the token. Whatever the app, the rule holds: **one TCP
+listener per session, the gate's; everything else a Unix socket.**
+
+The gate is not a workaround for noVNC in particular, and it is not redundant
+with auth the app already ships. websockify is the instructive case,
 because it looks like it could do this itself and cannot: `--token-plugin` is a
 *target selector* — it picks which backend to connect to and denies nothing —
 while the auth plugins are `BasicHTTPAuth`, `ExpectOrigin` and
@@ -468,7 +504,7 @@ while the auth plugins are `BasicHTTPAuth`, `ExpectOrigin` and
 `authenticate(headers, target_host, target_port)`. The query string is never
 passed in, so a `?token=` check cannot be written against it without patching
 websockify. (`--web-auth` does extend those plugins to static files; coverage
-was never the gap.) Expect the same of the next branch-B app, and put the
+was never the gap.) Expect the same of the next app, and put the
 authentication in the gate rather than re-solving it per app, in whatever
 language that app happens to be.
 
@@ -509,7 +545,7 @@ language that app happens to be.
   static assets — noVNC's `vnc.html` and its JavaScript, say — nginx could
   serve them from a `root` directive and save a hop per file. Don't: the moment
   the location block knows what the app is, the template stops being the one
-  file every branch-B app copies unedited.
+  file every interactive app takes unedited.
 
 ### Configuration the image ships goes in /etc/xdg, not the home directory
 
@@ -639,11 +675,10 @@ same user, so treat the session token like any other secret:
   command that starts the container, README examples included.
   `/proc/<pid>/cmdline` is world-readable and `ps aux` will hand the session
   to anyone on the node. `/proc/<pid>/environ` is `0400`, so the environment
-  is the right channel — `app-jupyter` passes `JUPYTER_TOKEN` rather than
-  `--IdentityProvider.token`.
+  is the right channel.
 - **Never in the job's output.** stdout and stderr land in the job's archived
-  output. `session-env.sh` does not echo a supplied token; check once that the
-  app's own start-up banner does not either (Jupyter prints its URL).
+  output. `session-env.sh` does not echo a supplied token, and the app behind
+  the gate never has it to print.
 - **Never in a file anyone else can reach.** The gate renders the token into
   `nginx.conf`, so that lives in `$OSP_APP_SOCK_DIR` (`0700`, under the
   private `/tmp`), never under `$TMPDIR` or in the job directory, and
@@ -651,18 +686,20 @@ same user, so treat the session token like any other secret:
 - **Never in a log.** nginx's default `combined` format logs the full request
   line including the query string, and the first request of every session
   carries the token there. The gate logs `$uri` only.
-- **Not in processes that do not need it.** Today the token is in the
-  environment of every process of the session, which `--pid` keeps from other
-  sessions; handing it only to the process that checks it (the gate, or
-  Jupyter as `JUPYTER_TOKEN`) is planned.
+- **Not in processes that do not need it.** Start the app with
+  `env -u OSP_APP_TOKEN` so it, and everything it starts (kernels, terminals),
+  never holds it; only the gate needs it. `app-jupyter` does; the desktops
+  (where the window manager, terminal and file manager inherit it today, which
+  `--pid` keeps from other sessions) will.
 
 The redirect that trades `?token=` for a cookie is part of the same discipline:
 it keeps the secret out of browser history and `Referer` headers after one hop.
 
-One accepted exception: for a Tapis-native token (Jupyter's `JUPYTER_TOKEN`),
-Tapis itself writes the value into `tapisjob.env` / `tapisjob.sh` in the job
-directory and may render it onto the container command line. That is outside
-the image's control; the run profile's mount allowlist and `--pid` contain it.
+One accepted exception: where the token reaches the job as a Tapis app
+variable, Tapis itself writes the value into `tapisjob.env` / `tapisjob.sh` in
+the job directory, and may render it onto the container command line. That is
+outside the image's control; the run profile's mount allowlist and `--pid`
+contain it.
 
 ### TMPDIR points somewhere the container cannot see
 
@@ -725,7 +762,13 @@ service account two sessions have the same uid, and so the same suffix.
   `unix:path=$OSP_APP_SOCK_DIR/…`, never `dbus-launch`'s default (an abstract
   socket on Linux); a desktop's ICE listener is checked; Jupyter's kernels use
   `--KernelManager.transport=ipc`, with the sockets in its runtime directory.
-  Check a running session with `ss -ltn` (only the gate's port) and
+  Debug servers are the trap: ipykernel's debugger starts `debugpy` on a
+  loopback port, which keeps listening after the debugger is turned off and
+  lets any process on the node attach to the kernel without a token, so the
+  Jupyter images remove `debugpy`. The one accepted exception is ipykernel's
+  pipe for output from forked subprocesses, a loopback port that acts only on
+  messages carrying a random per-kernel key. Check a running session with
+  `ss -ltn` (the gate's port, plus that pipe per Jupyter kernel) and
   `ss -xl | grep '@'` (nothing of the session's).
 
 When adding an interactive app, ask what it names globally — a port, a lock
@@ -786,6 +829,11 @@ asks for `vnc.html` (`OSP_APP_HEALTH_PATH`).
 
 ## 5. The workflow, and why it looks like that
 
+`app-template` has one more workflow, `kit.yml`, which publishes the kit image
+(§4a) on the same `v*` tags and on manual dispatch (`sha-<short>`), for
+`linux/amd64` and `linux/arm64`; the run's summary shows the digest to pin. It
+is not copied into any app.
+
 **Triggers: pushes to `main`, `v*` tags, manual dispatch. Nothing else.**
 Pull requests do not build. Every run of this workflow publishes, so there is
 never a run whose result you have to go looking for. To build a branch for
@@ -837,7 +885,7 @@ Silicon laptop emulates and is slow.
 
 ```bash
 cp -r app-template app-<thing> && cd app-<thing>
-rm CONVENTIONS.md     # it lives in app-template only
+rm -r CONVENTIONS.md web kit .github/workflows/kit.yml   # app-template's own; web/ comes from the kit
 # edit Dockerfile, entrypoint.sh, README.md; add the source
 git init -b main && git add -A && git commit -m "initial app-<thing>"
 gh repo create OneSciencePlace/app-<thing> --public --source=. --push

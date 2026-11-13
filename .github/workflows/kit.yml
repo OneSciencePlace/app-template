@@ -1,0 +1,65 @@
+name: kit
+
+# Publishes this repository's web/ as ghcr.io/onescienceplace/app-kit, the
+# image the app-* repos copy their session files from (COPY --from). This
+# workflow lives in app-template only; build-and-push.yml is the one every
+# app-* repo copies.
+#
+# Tags follow the template's: git tag v1.1.0 -> app-kit:1.1.0 (and latest);
+# a manual run on a branch -> app-kit:sha-<short>. The run's summary shows the
+# digest to pin in an app's Dockerfile.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  kit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive kit tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/onescienceplace/app-kit
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      # Files only, no RUN steps, so both platforms build without emulation;
+      # arm64 spares Apple Silicon users a --platform flag on local builds.
+      - name: Build and push the kit
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: kit/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Show the digest to pin
+        run: |
+          {
+            echo "### app-kit"
+            echo
+            echo '```'
+            echo "${{ fromJSON(steps.meta.outputs.json).tags[0] }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
