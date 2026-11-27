@@ -8,8 +8,10 @@
 # Parts: session (session-env.sh, every interactive app), gate (token-gate.sh
 # and nginx.conf.template), supervisor (supervise.sh). With no argument, all
 # three: every interactive app uses all three. Prints one line per check and
-# exits 1 if anything is missing, so the build fails with the reason rather
-# than a session failing at start-up on a compute node.
+# a WARNING naming anything missing, then exits 0: it never fails a build
+# (osp-ops plan D-13: image authors are not stopped at build time). An image
+# that lacks something builds, and its sessions fail at start-up instead, on
+# a compute node: read the warnings.
 #
 # POSIX sh only, so it runs on any base image with a shell; it needs nothing
 # it is checking for.
@@ -17,7 +19,7 @@
 parts=${*:-session gate supervisor}
 fail=0
 ok()   { printf 'ok    %s\n' "$*"; }
-bad()  { printf 'MISSING %s\n' "$*" >&2; fail=1; }
+bad()  { printf 'WARNING missing: %s\n' "$*" >&2; fail=1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 for part in $parts; do
@@ -75,6 +77,6 @@ done
 if [ "$fail" = 0 ]; then
     echo "[check-deps] everything web/ needs is here ($parts)"
 else
-    echo "[check-deps] this image lacks what web/ needs; see MISSING above" >&2
+    echo "[check-deps] WARNING: this image lacks what web/ needs (above); its sessions will fail at start-up" >&2
 fi
-exit "$fail"
+exit 0

@@ -13,7 +13,7 @@
 # the rest 0644), owned by root, so the app's Dockerfile need not chmod them.
 # Then, once the app's packages are installed:
 #
-#   RUN /app/web/check-deps.sh       # fails the build if the image lacks what web/ needs
+#   RUN /app/web/check-deps.sh       # warns if the image lacks what web/ needs (never fails the build)
 #
 # Built by .github/workflows/kit.yml from this repository's web/, and versioned
 # with the template: git tag v1.1.0 publishes app-kit:1.1.0. Build it locally
