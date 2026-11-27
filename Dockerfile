@@ -67,8 +67,8 @@ ENV HOME=/tmp \
 # the supervisor needs bash >= 5.1 and setsid. ubuntu:26.04 has bash and
 # setsid; listing bash keeps that true if the base changes. Other bases:
 # Debian and the RHEL family call the package `nginx` (and `gettext`), Alpine
-# needs `bash nginx gettext-envsubst` added. web/check-deps.sh fails the
-# build, not a session, if anything is missing, and says what.
+# needs `bash nginx gettext-envsubst` added. web/check-deps.sh names
+# anything missing as a warning at build (it does not fail the build).
 #
 #     RUN apt-get update && apt-get install -y --no-install-recommends \
 #             nginx-light gettext-base bash \
@@ -114,7 +114,9 @@ RUN chmod -R a+rX /app && chmod 0755 /app/entrypoint.sh
 # group-writable (above); under a plain `docker run` without
 # no-new-privileges, that plus a setuid `su` is a way to root inside the
 # container. Apptainer mounts the image nosuid anyway. Keep this after the
-# last package install.
+# last package install. A default, not a rule: an image that needs a setuid
+# program may leave it out, but setuid files fail the image's validation, so
+# it is not offered on shared-account systems (osp-ops plan D-13).
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true
 
 # /data is a mount point. Make it writable by whoever runs the container, so a

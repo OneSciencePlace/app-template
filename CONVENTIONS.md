@@ -27,9 +27,8 @@ security model below (`design/app-hardening/`).
   gate), `app-novnc` (desktop: a VNC desktop behind the gate).
   The same detector wrapped in each kind of interactive app:
   `app-object-detection-jupyter` (web, a tutorial notebook),
-  `app-object-detection-novnc-pcmanfm` and `app-object-detection-novnc-xfce`
-  (desktop, one desktop app on a light and a full desktop stack; identical
-  below the desktop layer, and each README carries the comparison).
+  `app-object-detection-novnc-pcmanfm` (desktop, one desktop app on a light
+  desktop stack).
 - **Status of the examples.** `app-template` and `app-novnc` (from `1.0.0`)
   follow this document. The other examples are being brought in line; until
   an example's first release after this change, where it and this document
@@ -248,6 +247,20 @@ apps are not gated this way. Where sessions share an account, users are told:
 > users of this portal. Each session is kept apart from the others, but they
 > are not separate accounts. Do not use these sessions for sensitive data.
 
+**What users and image authors may do** (`osp-ops` plan D-13). Inside a
+session, a user may install and run anything that runs as the session's
+account without extra privileges, and may expose their own session by what
+they do: a server they start, the debugger, packages they install. The profile
+is what stops them gaining privileges or reaching outside the container.
+Sessions keep the node's network: there is no network namespace under
+Apptainer / Singularity. Image authors are not stopped at build time: the
+kit's `check-deps.sh` and the build tools of images such as `app-jupyter`
+print warnings rather than failing, and defaults such as the setuid strip can
+be left out. What decides whether an image is offered is its validation: it
+fails an image that lets a user gain privileges or reach a session that did
+nothing to expose itself (setuid files; a token, socket or process within
+another session's reach), and warns where a user can only expose themselves.
+
 **OSP-run clusters** (compute site `osp`: course and test clusters). There the
 runtime configuration is OSP's to set, not a compute site's to probe:
 interactive sessions on exclusive nodes first; where nodes are shared, OCI mode
@@ -429,8 +442,9 @@ and the usual small tools (BusyBox is enough) for `session-env.sh`; nginx with
 `setsid` for the supervisor. By their package versions that covers Ubuntu
 22.04 on, Debian 11 on, the RHEL family from 9 and Alpine (adding
 `bash nginx gettext-envsubst`); RHEL 8 and Ubuntu 20.04 lack bash 5.1. Every interactive image runs
-`RUN /app/web/check-deps.sh` after installing its packages, so a missing
-piece fails the build with its name, not a session on a compute node. Apps released before the kit (`app-novnc` `1.0.0`, the
+`RUN /app/web/check-deps.sh` after installing its packages: it names anything
+missing as a warning in the build log (it never fails the build), which is
+easier to act on than a session failing on a compute node. Apps released before the kit (`app-novnc` `1.0.0`, the
 object-detection desktops) still carry a copy of `web/` until their next
 release.
 

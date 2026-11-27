@@ -27,7 +27,7 @@ By their package versions, Ubuntu 22.04 and later, Debian 11 and later, the
 RHEL family from 9 and Alpine (with `bash nginx gettext-envsubst` added) have
 all of it (tested: Ubuntu 26.04 and 24.04, and BusyBox for `session-env.sh`);
 RHEL 8 and Ubuntu 20.04 have bash older than 5.1. Run `RUN /app/web/check-deps.sh` once the
-image's packages are in: it fails the build, naming what is missing.
+image's packages are in: it names anything missing as a warning (it does not fail the build).
 
 | File | Used by | What it is |
 |---|---|---|
@@ -35,7 +35,7 @@ image's packages are in: it fails the build, naming what is missing.
 | `token-gate.sh` | every interactive app | renders the nginx config and execs nginx |
 | `nginx.conf.template` | every interactive app | the token gate |
 | `supervise.sh` | every interactive app (sourced, bash) | starts, watches and stops the session's processes: the app and the gate at least |
-| `check-deps.sh` | every interactive image, at build | fails the build if the image lacks what these files need |
+| `check-deps.sh` | every interactive image, at build | warns, naming anything these files need that the image lacks; never fails the build |
 
 Never copy or edit them in an app's repository. A fix made here is released
 with the template, and reaches an app when its `Dockerfile` names the new kit
