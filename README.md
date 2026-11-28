@@ -196,3 +196,11 @@ Set `OSP_APP_USER` to change the name option 1 uses.
 `apptainer build` from a local archive needs no root and no fakeroot. Test the
 `.sif` and not just the image: read-only-filesystem bugs never show up under
 `docker run`.
+
+## Testing before a release
+
+The kit has no automated test. Before tagging a release, run `sh web/check-deps.sh`
+on a host or image that has the tools, and on one without nginx: it prints
+warnings and exits `0` either way. A new kit reaches each app as a `FROM`
+bump, after which that app's own tests and its validation (part B) are
+repeated. What each repository runs, and in what order: `osp-ops` `runbooks/validate-system.md`, "What to run, per repository".
